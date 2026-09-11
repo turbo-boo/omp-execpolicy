@@ -1,0 +1,102 @@
+# Example execution policy.
+#
+# Load with:
+#   cp example.rules ~/.omp/agent/rules/
+#   omp execpolicy check "git push --force"
+#
+# Rule files are searched in every config directory omp already knows about,
+# lowest priority first, so an existing ~/.codex/rules/*.rules works unchanged.
+#
+#   prefix_rule(pattern=[...], decision="allow"|"prompt"|"forbidden", justification=...)
+#   host_executable(name="git", paths=["/usr/bin/git"])
+
+# ── Read-only inspection: never worth asking about ───────────────────────────
+
+prefix_rule(
+    pattern = ["git", ["status", "log", "diff", "show", "branch", "remote", "tag"]],
+    decision = "allow",
+    justification = "read-only git inspection",
+    match = ["git status", ["git", "log", "--oneline", "-20"]],
+    not_match = [["git", "push"]],
+)
+
+prefix_rule(
+    pattern = [["ls", "cat", "head", "tail", "wc", "pwd", "which", "file", "stat", "tree"]],
+    decision = "allow",
+    justification = "read-only filesystem inspection",
+)
+
+prefix_rule(
+    pattern = [["rg", "grep", "fd", "find"]],
+    decision = "allow",
+    justification = "read-only search",
+)
+
+# ── Destructive: blocked outright ────────────────────────────────────────────
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "discards uncommitted work; use `git stash` or a worktree instead",
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f"]],
+    decision = "forbidden",
+    justification = "rewrites shared history; use `--force-with-lease` after confirming the remote state",
+)
+
+prefix_rule(
+    pattern = ["git", "clean", "-fdx"],
+    decision = "forbidden",
+    justification = "deletes ignored and untracked files",
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf", ["/", "~", "$HOME"]],
+    decision = "forbidden",
+    justification = "refuses to delete a home or root path",
+)
+
+# ── Everything else in a category: ask first ─────────────────────────────────
+#
+# Who answers a `prompt` is the plugin's `judge` setting — Codex's per-scope
+# `GuardianReviewMode`. With `judge = true` (the default) the model reviewer
+# answers and you are asked only when it cannot decide; with `judge = false`
+# every prompt comes to you.
+
+prefix_rule(
+    pattern = ["git", ["push", "commit"]],
+    decision = "prompt",
+    justification = "changes shared state",
+)
+
+prefix_rule(
+    pattern = [["npm", "pnpm", "bun", "yarn"]],
+    decision = "prompt",
+    justification = "package manager action: may install or publish",
+    match = ["npm install", ["pnpm", "add", "left-pad"]],
+)
+
+prefix_rule(
+    pattern = [["curl", "wget"]],
+    decision = "prompt",
+    justification = "network egress",
+)
+
+prefix_rule(
+    pattern = ["docker", ["run", "rm", "system"]],
+    decision = "prompt",
+    justification = "container or daemon state change",
+)
+
+# `host_executable` restricts basename fallback for an absolute program path:
+# with this rule, `/usr/bin/git status` matches the `git` rules above, while an
+# unlisted copy of git (say `/tmp/git`) does not.
+host_executable(
+    name = "git",
+    paths = [
+        "/usr/bin/git",
+        "/usr/local/bin/git",
+    ],
+)

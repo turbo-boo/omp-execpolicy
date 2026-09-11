@@ -1,0 +1,108 @@
+{
+	"name": "omp-execpolicy",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Codex-style shell command judgment for oh-my-pi: prefix rules, dangerous-command heuristics, and an optional model judge gating every bash call",
+	"homepage": "https://omp.sh",
+	"type": "module",
+	"scripts": {
+		"test": "node --test \"test/*.test.ts\"",
+		"typecheck": "tsc --noEmit"
+	},
+	"omp": {
+		"extensions": [
+			"./src/index.ts"
+		],
+		"settings": {
+			"enabled": {
+				"type": "boolean",
+				"description": "Judge shell commands at all. Disabled = the extension loads but never intervenes.",
+				"default": true,
+				"env": "OMP_EXECPOLICY_ENABLED"
+			},
+			"ask": {
+				"type": "enum",
+				"values": [
+					"always",
+					"never"
+				],
+				"description": "'never' rejects prompt verdicts outright instead of asking (Codex approval_policy=never).",
+				"default": "always",
+				"env": "OMP_EXECPOLICY_ASK"
+			},
+			"unmatched": {
+				"type": "enum",
+				"values": [
+					"allow",
+					"prompt",
+					"none"
+				],
+				"description": "Verdict for commands no rule matched. 'prompt' holds every unmatched command for approval (the reviewer decides when judge is on). 'none' leaves it to the harness.",
+				"default": "prompt",
+				"env": "OMP_EXECPOLICY_UNMATCHED"
+			},
+			"judge": {
+				"type": "boolean",
+				"description": "Ask a model to review every command that needs approval, standing in for the user prompt (Codex auto-review). Off = you answer each prompt yourself.",
+				"default": true,
+				"env": "OMP_EXECPOLICY_JUDGE"
+			},
+			"judgeModel": {
+				"type": "string",
+				"description": "Model for the judge: provider/id, bare id, or a role alias such as @smol.",
+				"default": "@smol",
+				"env": "OMP_EXECPOLICY_JUDGE_MODEL"
+			},
+			"judgeTimeoutMs": {
+				"type": "number",
+				"description": "Per-command judge timeout in milliseconds.",
+				"default": 15000,
+				"min": 1000,
+				"max": 600000,
+				"env": "OMP_EXECPOLICY_JUDGE_TIMEOUT_MS"
+			},
+			"judgeOnError": {
+				"type": "enum",
+				"values": [
+					"ask",
+					"allow"
+				],
+				"description": "When the judge cannot produce a verdict: ask the user, or let the command run.",
+				"default": "ask",
+				"env": "OMP_EXECPOLICY_JUDGE_ON_ERROR"
+			},
+			"judgePolicy": {
+				"type": "string",
+				"description": "Security policy for the judge: inline text, or a path to a markdown file.",
+				"default": "",
+				"env": "OMP_EXECPOLICY_POLICY"
+			},
+			"extraRuleFiles": {
+				"type": "string",
+				"description": "Extra *.rules file to load, or a comma-separated list of them.",
+				"default": "",
+				"env": "OMP_EXECPOLICY_RULES"
+			},
+			"amendRules": {
+				"type": "boolean",
+				"description": "Offer \"don't ask again\" approvals that append an allow rule to the amendment file.",
+				"default": false,
+				"env": "OMP_EXECPOLICY_AMEND"
+			},
+			"amendFile": {
+				"type": "string",
+				"description": "Rule file amended when the user approves a command with \"don't ask again\".",
+				"default": "~/.omp/agent/rules/default.rules",
+				"env": "OMP_EXECPOLICY_AMEND_FILE"
+			}
+		}
+	},
+	"peerDependencies": {
+		"@oh-my-pi/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@oh-my-pi/pi-coding-agent": "^18.1.17",
+		"@types/node": "^22.0.0",
+		"typescript": "^5.9.0"
+	}
+}
