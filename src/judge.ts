@@ -89,7 +89,8 @@ export async function judgeCommand(request: JudgeRequest, deps: JudgeDeps): Prom
 		...(request.policy === undefined ? {} : { policy: request.policy }),
 	});
 	const complete = deps.complete ?? completeSimple;
-	const retries = Math.max(0, Math.floor(deps.retries ?? 0));
+	const requestedRetries = deps.retries ?? 0;
+	const retries = Number.isFinite(requestedRetries) ? Math.max(0, Math.floor(requestedRetries)) : 0;
 	let previous: JudgeResult | undefined;
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
