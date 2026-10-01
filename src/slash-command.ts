@@ -1,9 +1,10 @@
 /**
- * `/execpolicy` — inspect the engine without running a command.
+ * `/execpolicy` — inspect the engine and control the current omp session.
  *
- * Mirrors `codex execpolicy check`: `check` prints the JSON evaluation
- * (`{ matchedRules, decision }`) so scripts and humans can see exactly why a
- * command would be allowed, prompted, or blocked.
+ * Inspection mirrors `codex execpolicy check`. Model/thinking changes use the
+ * extension runtime so they take effect immediately; persistent settings are
+ * delegated to omp's own typed `config` CLI rather than reimplementing its
+ * settings schema here.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
@@ -13,14 +14,32 @@ import { renderPattern } from "./rules.ts";
 import type { EngineState, LoadState } from "./state.ts";
 
 const OUTPUT_TYPE = "execpolicy";
+const THINKING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-const HELP = `Usage: /execpolicy [status|rules|files|check <command>|explain <command>]
+type RuntimeControls = {
+	setModel?: (model: NonNullable<ExtensionCommandContext["model"]>) => Promise<boolean>;
+	getThinkingLevel?: () => string | undefined;
+	setThinkingLevel?: (level: string) => void;
+	exec?: (
+		command: string,
+		args: string[],
+		options?: { cwd?: string; timeout?: number },
+	) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
+};
 
-  status            Settings, rule files, and judge configuration.
-  files             Discovered rule files and parse diagnostics.
-  rules [filter]    Compiled prefix rules.
-  check <command>   Print the JSON evaluation (Codex-compatible shape).
-  explain <command> Human-readable verdict, deciding layer, and reason.`;
+const HELP = `Usage: /execpolicy [status|rules|files|check <command>|explain <command>|model [spec]|thinking [level]|config <action> ...]
+
+  status                   Settings, rule files, and judge configuration.
+  files                    Discovered rule files and parse diagnostics.
+  rules [filter]           Compiled prefix rules.
+  check <command>          Print the JSON evaluation (Codex-compatible shape).
+  explain <command>        Human-readable verdict, deciding layer, and reason.
+  model [spec]             Show or switch the current session model.
+  thinking [level]         Show or set thinking: inherit|off|minimal|low|medium|high|xhigh|max.
+  config list              List omp settings.
+  config get <key>         Read one omp setting.
+  config set <key> <value> Persist one omp setting through \`omp config set\`.
+  config reset <key>       Remove one persisted omp setting.`;
 
 function renderEvaluation(state: EngineState, command: string): Evaluation {
 	return state.policy.check(command, heuristicsFor(state.settings));
@@ -34,7 +53,7 @@ function formatStatus(state: EngineState): string {
 		`rules loaded: ${loaded.policy.ruleCount}`,
 		`prompt policy: ${settings.ask === "never" ? "never prompt (prompt verdicts become blocks)" : "ask the user"}`,
 		`unmatched commands: ${settings.unmatched ?? "no opinion (allowed)"}`,
-		`judge: ${settings.judge ? `${settings.judgeModel} (timeout ${settings.judgeTimeoutMs}ms, on error: ${settings.judgeOnError})` : "off"}`,
+		`judge: ${settings.judge ? `${settings.judgeModel} (timeout ${settings.judgeTimeoutMs}ms, retries ${settings.judgeRetries}, on error: ${settings.judgeOnError})` : "off"}`,
 		`rule amendment: ${settings.amendRules ? settings.amendFile : "off"}`,
 		"",
 		"## Rule files (low → high precedence)",
@@ -95,9 +114,6 @@ function formatExplain(state: EngineState, command: string): string {
 		`deciding layer: ${verdict.source}`,
 	];
 	if (verdict.reason !== undefined) lines.push(`reason: ${verdict.reason}`);
-	// The section earns its space only when what we judged differs from what the
-	// user wrote: a compound line (several segments) or an unwrapped/nested
-	// program (`sudo rm …` judged as `rm …`).
 	const judged = evaluation.segments;
 	if (judged.length > 1 || judged.some(segment => segment.argv.join(" ") !== segment.text)) {
 		lines.push("", "evaluated segments:");
@@ -127,39 +143,140 @@ function formatExplain(state: EngineState, command: string): string {
 	return lines.join("\n");
 }
 
+function splitHead(input: string): [string, string] {
+	const trimmed = input.trim();
+	if (trimmed.length === 0) return ["", ""];
+	const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+	return [match?.[1] ?? "", match?.[2]?.trim() ?? ""];
+}
+
+async function handleModel(pi: ExtensionAPI, ctx: ExtensionCommandContext, spec: string): Promise<string> {
+	if (spec.length === 0) {
+		const current = ctx.model;
+		return current === undefined ? "model: (none)" : `model: ${current.provider}/${current.id}`;
+	}
+	const model = ctx.models.resolve(spec);
+	if (model === undefined) return `model not found: ${spec}`;
+	const setModel = (pi as unknown as RuntimeControls).setModel;
+	if (typeof setModel !== "function") return "model switching is not supported by this omp runtime";
+	const ok = await setModel(model);
+	return ok ? `model: ${model.provider}/${model.id}` : `model unavailable (no credential): ${model.provider}/${model.id}`;
+}
+
+function handleThinking(pi: ExtensionAPI, level: string): string {
+	const runtime = pi as unknown as RuntimeControls;
+	if (level.length === 0) {
+		return typeof runtime.getThinkingLevel === "function"
+			? `thinking: ${runtime.getThinkingLevel() ?? "(unset)"}`
+			: "thinking controls are not supported by this omp runtime";
+	}
+	const normalized = level.toLowerCase();
+	if (!THINKING_LEVELS.has(normalized)) {
+		return `invalid thinking level: ${level}\nvalid: ${[...THINKING_LEVELS].join(", ")}`;
+	}
+	if (typeof runtime.setThinkingLevel !== "function") return "thinking controls are not supported by this omp runtime";
+	runtime.setThinkingLevel(normalized);
+	return `thinking: ${normalized}`;
+}
+
+async function handleConfig(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<string> {
+	const [action, rest] = splitHead(args);
+	const runtime = pi as unknown as RuntimeControls;
+	if (typeof runtime.exec !== "function") return "omp config control is not supported by this omp runtime";
+	let commandArgs: string[];
+
+	switch (action) {
+		case "list":
+			if (rest.length > 0 && rest !== "--json") return "Usage: /execpolicy config list [--json]";
+			commandArgs = ["config", "list", ...(rest === "--json" ? ["--json"] : [])];
+			break;
+		case "get": {
+			const [key, extra] = splitHead(rest);
+			if (key.length === 0 || (extra.length > 0 && extra !== "--json")) return "Usage: /execpolicy config get <key> [--json]";
+			commandArgs = ["config", "get", key, ...(extra === "--json" ? ["--json"] : [])];
+			break;
+		}
+		case "set": {
+			const [key, value] = splitHead(rest);
+			if (key.length === 0 || value.length === 0) return "Usage: /execpolicy config set <key> <value>";
+			commandArgs = ["config", "set", key, value];
+			break;
+		}
+		case "reset": {
+			const [key, extra] = splitHead(rest);
+			if (key.length === 0 || extra.length > 0) return "Usage: /execpolicy config reset <key>";
+			commandArgs = ["config", "reset", key];
+			break;
+		}
+		default:
+			return "Usage: /execpolicy config [list|get <key>|set <key> <value>|reset <key>]";
+	}
+
+	const result = await runtime.exec("omp", commandArgs, { cwd: ctx.cwd, timeout: 30_000 });
+	const stdout = result.stdout.trim();
+	const stderr = result.stderr.trim();
+	if (result.code !== 0) {
+		return [`omp config failed (exit ${result.code})`, stderr || stdout || "(no output)"].join("\n");
+	}
+	return stdout || stderr || "ok";
+}
+
 export function registerExecpolicyCommand(pi: ExtensionAPI, loadState: LoadState): void {
 	pi.registerCommand("execpolicy", {
-		description: "Inspect the shell-command execution policy (rules, verdicts, diagnostics)",
+		description: "Inspect shell execution policy and control the current omp session",
 		handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-			const state = await loadState(ctx.cwd);
 			const trimmed = args.trim();
-			const spaceIndex = trimmed.indexOf(" ");
-			const subcommand = (spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex)) || "status";
-			const rest = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim();
+			const [subcommandRaw, rest] = splitHead(trimmed);
+			const subcommand = subcommandRaw || "status";
 			let output: string;
+
 			switch (subcommand) {
+				case "model":
+					output = await handleModel(pi, ctx, rest);
+					break;
+				case "thinking":
+					output = handleThinking(pi, rest);
+					break;
+				case "config":
+					output = await handleConfig(pi, ctx, rest);
+					break;
 				case "status":
-					output = formatStatus(state);
-					break;
 				case "files":
-					output = formatFiles(state);
-					break;
 				case "rules":
-					output = formatRules(state, rest.length === 0 ? undefined : rest);
-					break;
 				case "check":
-					output = rest.length === 0 ? HELP : formatCheck(state, rest);
-					break;
 				case "explain":
 				case "why":
-					output = rest.length === 0 ? HELP : formatExplain(state, rest);
+				case "help": {
+					const state = await loadState(ctx.cwd);
+					switch (subcommand) {
+						case "status":
+							output = formatStatus(state);
+							break;
+						case "files":
+							output = formatFiles(state);
+							break;
+						case "rules":
+							output = formatRules(state, rest.length === 0 ? undefined : rest);
+							break;
+						case "check":
+							output = rest.length === 0 ? HELP : formatCheck(state, rest);
+							break;
+						case "explain":
+						case "why":
+							output = rest.length === 0 ? HELP : formatExplain(state, rest);
+							break;
+						case "help":
+							output = HELP;
+							break;
+						default:
+							output = HELP;
+					}
 					break;
-				case "help":
-					output = HELP;
-					break;
+				}
 				default:
 					output = `Unknown subcommand ${JSON.stringify(subcommand)}.\n\n${HELP}`;
 			}
+
 			pi.sendMessage({ customType: OUTPUT_TYPE, content: output, display: true });
 		},
 	});

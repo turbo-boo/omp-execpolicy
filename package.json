@@ -61,6 +61,14 @@
 				"max": 600000,
 				"env": "OMP_EXECPOLICY_JUDGE_TIMEOUT_MS"
 			},
+			"judgeRetries": {
+				"type": "number",
+				"description": "Extra attempts after an empty or malformed judge response. Provider errors and timeouts are not retried.",
+				"default": 1,
+				"min": 0,
+				"max": 3,
+				"env": "OMP_EXECPOLICY_JUDGE_RETRIES"
+			},
 			"judgeOnError": {
 				"type": "enum",
 				"values": [

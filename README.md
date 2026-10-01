@@ -214,11 +214,14 @@ and a narrow scope, `critical` denies.
 ```
 
 The rationale is returned to the model as the tool error, so it learns *why*.
-The judge is non-authoritative: an unreadable response, provider error, or
-timeout falls back to `judgeOnError` (`ask` by default — ask the user, or refuse
-when there is no UI to ask through; `allow` lets the command run). Codex itself
-denies outright on an unreadable review, so refusing is the same posture with a
-chance to ask first.
+The judge is non-authoritative. Model formatting mistakes are handled before
+fallback: fenced/prose-wrapped JSON, common `verdict`/`result`/`review`
+envelopes, enum casing, and trailing commas are normalized without changing the
+decision semantics. Conflicting valid verdicts are never guessed. Empty,
+malformed, or structurally invalid verdicts are retried `judgeRetries` times
+(default 1); provider errors and timeouts are not retried. If no readable
+verdict remains, `judgeOnError` applies (`ask` by default — ask the user, or
+refuse when there is no UI to ask through; `allow` lets the command run).
 
 The security policy section is the operator's to replace, the way Codex's
 `[auto_review] policy` is. Point `judgePolicy` at a markdown file (or set the
@@ -313,6 +316,24 @@ bash command the reviewer allowed.
 | `/execpolicy rules [filter]`| Compiled rules with decision, justification, and source.            |
 | `/execpolicy check <cmd>`   | The JSON evaluation, in `codex execpolicy check`'s shape.           |
 | `/execpolicy explain <cmd>` | The verdict, deciding layer, reason, and judged segments.           |
+| `/execpolicy model [spec]`   | Show or switch the current session model.                            |
+| `/execpolicy thinking [level]` | Show or change the current session thinking level.                |
+| `/execpolicy config ...`     | Delegate `list/get/set/reset` to omp's typed config CLI.           |
+
+```console
+$ /execpolicy model @slow
+model: anthropic/claude-sonnet-5
+
+$ /execpolicy thinking high
+thinking: high
+
+$ /execpolicy config set compaction.enabled false
+✓ Set compaction.enabled = false
+```
+
+Model and thinking changes affect the live session immediately. `config set`
+and `config reset` are persistent because the extension delegates them to
+`omp config`; values are passed as argv, not through a shell.
 
 ```console
 $ /execpolicy explain sudo rm -rf /tmp/x
@@ -352,6 +373,7 @@ Settable in `/settings` → Plugins, or via the environment variable for each ke
 | `judge`          | `OMP_EXECPOLICY_JUDGE`           | `true`                             | Review every command that needs approval.                   |
 | `judgeModel`     | `OMP_EXECPOLICY_JUDGE_MODEL`     | `@smol`                            | `provider/id`, bare id, or a role alias.                    |
 | `judgeTimeoutMs` | `OMP_EXECPOLICY_JUDGE_TIMEOUT_MS`| `15000`                            | Per-command judge timeout.                                  |
+| `judgeRetries`   | `OMP_EXECPOLICY_JUDGE_RETRIES`   | `1`                                | Extra attempts for empty/malformed verdicts (0–3).           |
 | `judgeOnError`   | `OMP_EXECPOLICY_JUDGE_ON_ERROR`  | `ask`                              | `ask` or `allow` when the judge cannot answer.               |
 | `judgePolicy`    | `OMP_EXECPOLICY_POLICY`          | *(bundled default)*                | Security policy for the judge: inline text, or a path to a file. |
 | `extraRuleFiles` | `OMP_EXECPOLICY_RULES`           | *(none)*                           | Extra `.rules` file(s), comma-separated.                    |

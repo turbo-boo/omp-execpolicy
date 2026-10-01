@@ -221,10 +221,10 @@ async function reviewCommand(
 			...(state.judgePolicy === undefined ? {} : { policy: state.judgePolicy }),
 			signal: AbortSignal.timeout(settings.judgeTimeoutMs),
 		},
-		{ model, apiKey, sessionId },
+		{ model, apiKey, sessionId, retries: settings.judgeRetries },
 	);
 	if (!result.ok) {
-		pi.logger.warn("execpolicy: judge unavailable", { error: result.error });
+		pi.logger.warn("execpolicy: judge unavailable", { kind: result.kind, error: result.error });
 		return judgeFallback(pi, ctx, command, state, evaluation, verdict, engine, sessionApprovals, result.error);
 	}
 	const review = result.verdict;
