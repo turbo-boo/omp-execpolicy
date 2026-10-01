@@ -275,6 +275,15 @@ Then verify and inspect:
 omp plugin list
 ```
 
+The same settings can be changed from the shell without opening omp:
+
+```bash
+omp plugin config get omp-execpolicy judgeModel
+omp plugin config set omp-execpolicy judgeModel @smol
+omp plugin config set omp-execpolicy judgeRetries 2
+omp plugin config list omp-execpolicy
+```
+
 ### Is `--approval-mode yolo` OK?
 
 Yes — it is the recommended pairing, and the plugin's dialogs are **not**
@@ -316,24 +325,31 @@ bash command the reviewer allowed.
 | `/execpolicy rules [filter]`| Compiled rules with decision, justification, and source.            |
 | `/execpolicy check <cmd>`   | The JSON evaluation, in `codex execpolicy check`'s shape.           |
 | `/execpolicy explain <cmd>` | The verdict, deciding layer, reason, and judged segments.           |
-| `/execpolicy model [spec]`   | Show or switch the current session model.                            |
-| `/execpolicy thinking [level]` | Show or change the current session thinking level.                |
-| `/execpolicy config ...`     | Delegate `list/get/set/reset` to omp's typed config CLI.           |
+| `/execpolicy model [spec]`   | Show or set the execpolicy judge model; independent from `/switch`. |
+| `/execpolicy config ...`     | Read/write omp-execpolicy plugin settings.                           |
 
 ```console
+$ /execpolicy model
+# Execpolicy judge model
+setting: @smol
+resolved: opencode-go/mimo-v2.6-flash
+OMP /switch does not change this setting.
+
 $ /execpolicy model @slow
-model: anthropic/claude-sonnet-5
+# Execpolicy judge model updated
+setting: @slow
+resolved: anthropic/claude-sonnet-5
+OMP /switch does not change this setting.
 
-$ /execpolicy thinking high
-thinking: high
-
-$ /execpolicy config set compaction.enabled false
-✓ Set compaction.enabled = false
+$ /execpolicy config set judgeRetries 2
+✓ Set judgeRetries
 ```
 
-Model and thinking changes affect the live session immediately. `config set`
-and `config reset` are persistent because the extension delegates them to
-`omp config`; values are passed as argv, not through a shell.
+`/execpolicy model` controls only the reviewer used by execpolicy. It never
+calls omp's session-model switch API, and changing the conversation model with
+`/switch` does not change the judge setting. Persistent changes are delegated
+to omp's plugin-settings CLI (`omp plugin config ... omp-execpolicy`) using argv
+rather than a shell.
 
 ```console
 $ /execpolicy explain sudo rm -rf /tmp/x
