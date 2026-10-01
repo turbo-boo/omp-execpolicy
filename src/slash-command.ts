@@ -17,10 +17,10 @@ const OUTPUT_TYPE = "execpolicy";
 const THINKING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 type RuntimeControls = {
-	setModel(model: NonNullable<ExtensionCommandContext["model"]>): Promise<boolean>;
-	getThinkingLevel(): string | undefined;
-	setThinkingLevel(level: string): void;
-	exec(
+	setModel?: (model: NonNullable<ExtensionCommandContext["model"]>) => Promise<boolean>;
+	getThinkingLevel?: () => string | undefined;
+	setThinkingLevel?: (level: string) => void;
+	exec?: (
 		command: string,
 		args: string[],
 		options?: { cwd?: string; timeout?: number },
@@ -157,17 +157,24 @@ async function handleModel(pi: ExtensionAPI, ctx: ExtensionCommandContext, spec:
 	}
 	const model = ctx.models.resolve(spec);
 	if (model === undefined) return `model not found: ${spec}`;
-	const ok = await (pi as unknown as RuntimeControls).setModel(model);
+	const setModel = (pi as unknown as RuntimeControls).setModel;
+	if (typeof setModel !== "function") return "model switching is not supported by this omp runtime";
+	const ok = await setModel(model);
 	return ok ? `model: ${model.provider}/${model.id}` : `model unavailable (no credential): ${model.provider}/${model.id}`;
 }
 
 function handleThinking(pi: ExtensionAPI, level: string): string {
 	const runtime = pi as unknown as RuntimeControls;
-	if (level.length === 0) return `thinking: ${runtime.getThinkingLevel() ?? "(unset)"}`;
+	if (level.length === 0) {
+		return typeof runtime.getThinkingLevel === "function"
+			? `thinking: ${runtime.getThinkingLevel() ?? "(unset)"}`
+			: "thinking controls are not supported by this omp runtime";
+	}
 	const normalized = level.toLowerCase();
 	if (!THINKING_LEVELS.has(normalized)) {
 		return `invalid thinking level: ${level}\nvalid: ${[...THINKING_LEVELS].join(", ")}`;
 	}
+	if (typeof runtime.setThinkingLevel !== "function") return "thinking controls are not supported by this omp runtime";
 	runtime.setThinkingLevel(normalized);
 	return `thinking: ${normalized}`;
 }
@@ -175,6 +182,7 @@ function handleThinking(pi: ExtensionAPI, level: string): string {
 async function handleConfig(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<string> {
 	const [action, rest] = splitHead(args);
 	const runtime = pi as unknown as RuntimeControls;
+	if (typeof runtime.exec !== "function") return "omp config control is not supported by this omp runtime";
 	let commandArgs: string[];
 
 	switch (action) {
