@@ -153,7 +153,7 @@ function verdictFromRecord(record: Record<string, unknown>): JudgeResult {
 
 	const riskRaw = record.risk_level ?? record.riskLevel;
 	const riskToken = token(riskRaw);
-	if (riskRaw !== undefined && riskToken !== undefined && RISK_LEVELS[riskToken] === undefined) {
+	if (riskRaw !== undefined && (riskToken === undefined || RISK_LEVELS[riskToken] === undefined)) {
 		return {
 			ok: false,
 			kind: "invalid_verdict",
@@ -165,8 +165,7 @@ function verdictFromRecord(record: Record<string, unknown>): JudgeResult {
 	const authorizationToken = token(authorizationRaw);
 	if (
 		authorizationRaw !== undefined &&
-		authorizationToken !== undefined &&
-		AUTHORIZATIONS[authorizationToken] === undefined
+		(authorizationToken === undefined || AUTHORIZATIONS[authorizationToken] === undefined)
 	) {
 		return {
 			ok: false,
@@ -194,6 +193,16 @@ function verdictKey(verdict: JudgeVerdict): string {
 	return JSON.stringify(verdict);
 }
 
+function wrappedVerdict(record: Record<string, unknown>): Record<string, unknown> | undefined {
+	for (const key of ["verdict", "result", "review"]) {
+		const nested = record[key];
+		if (nested !== null && typeof nested === "object" && !Array.isArray(nested)) {
+			return nested as Record<string, unknown>;
+		}
+	}
+	return undefined;
+}
+
 /** Extract the verdict from raw model output; never throws. */
 export function parseVerdict(raw: string): JudgeResult {
 	const candidates = extractJsonObjects(raw);
@@ -209,7 +218,11 @@ export function parseVerdict(raw: string): JudgeResult {
 		const record = parseJsonObject(candidate);
 		if (record === undefined) continue;
 		parsedObjectCount++;
-		const result = verdictFromRecord(record);
+		let result = verdictFromRecord(record);
+		if (!result.ok) {
+			const nested = wrappedVerdict(record);
+			if (nested !== undefined) result = verdictFromRecord(nested);
+		}
 		if (result.ok) valid.set(verdictKey(result.verdict), result.verdict);
 		else errors.push(result.error);
 	}
