@@ -49,6 +49,15 @@ describe("parseVerdict", () => {
 		assert.equal(result.verdict.outcome, "allow");
 	});
 
+	it("unwraps a common verdict envelope", () => {
+		const result = parseVerdict(
+			'{"verdict":{"outcome":"allow","risk_level":"low","user_authorization":"medium","rationale":"wrapped"}}',
+		);
+		assert.equal(result.ok, true);
+		if (!result.ok) return;
+		assert.equal(result.verdict.rationale, "wrapped");
+	});
+
 	it("accepts duplicate identical verdicts", () => {
 		const verdict = '{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"same"}';
 		const result = parseVerdict(`${verdict}\n${verdict}`);
@@ -74,5 +83,9 @@ describe("parseVerdict", () => {
 		const semantic = parseVerdict('{"outcome":"maybe"}');
 		assert.equal(semantic.ok, false);
 		if (!semantic.ok) assert.equal(semantic.kind, "invalid_verdict");
+
+		const wrongType = parseVerdict('{"outcome":"allow","risk_level":3}');
+		assert.equal(wrongType.ok, false);
+		if (!wrongType.ok) assert.equal(wrongType.kind, "invalid_verdict");
 	});
 });
