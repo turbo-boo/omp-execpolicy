@@ -196,7 +196,7 @@ async function reviewCommand(
 ): Promise<ToolCallEventResult | undefined> {
 	const settings = state.settings;
 	if (sessionApprovals.has(command)) return;
-	const model = ctx.models.resolve(settings.judgeModel) ?? ctx.model;
+	const model = ctx.models.resolve(settings.judgeModel);
 	if (model === undefined) {
 		pi.logger.warn("execpolicy: judge enabled but no model resolved", { spec: settings.judgeModel });
 		return judgeFallback(
