@@ -1,10 +1,9 @@
 /**
- * `/execpolicy` — inspect the engine and control the current omp session.
+ * `/execpolicy` — inspect and configure omp-execpolicy.
  *
- * Inspection mirrors `codex execpolicy check`. Model/thinking changes use the
- * extension runtime so they take effect immediately; persistent settings are
- * delegated to omp's own typed `config` CLI rather than reimplementing its
- * settings schema here.
+ * The command never changes omp's conversation model. Judge/model settings are
+ * persisted through omp's plugin-config CLI so they stay independent from
+ * `/switch`.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
@@ -14,12 +13,9 @@ import { renderPattern } from "./rules.ts";
 import type { EngineState, LoadState } from "./state.ts";
 
 const OUTPUT_TYPE = "execpolicy";
-const THINKING_LEVELS = new Set(["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const PLUGIN_NAME = "omp-execpolicy";
 
 type RuntimeControls = {
-	setModel?: (model: NonNullable<ExtensionCommandContext["model"]>) => Promise<boolean>;
-	getThinkingLevel?: () => string | undefined;
-	setThinkingLevel?: (level: string) => void;
 	exec?: (
 		command: string,
 		args: string[],
@@ -27,19 +23,18 @@ type RuntimeControls = {
 	) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
 };
 
-const HELP = `Usage: /execpolicy [status|rules|files|check <command>|explain <command>|model [spec]|thinking [level]|config <action> ...]
+const HELP = `Usage: /execpolicy [status|rules|files|check <command>|explain <command>|model [spec]|config <action> ...]
 
   status                   Settings, rule files, and judge configuration.
   files                    Discovered rule files and parse diagnostics.
   rules [filter]           Compiled prefix rules.
   check <command>          Print the JSON evaluation (Codex-compatible shape).
   explain <command>        Human-readable verdict, deciding layer, and reason.
-  model [spec]             Show or switch the current session model.
-  thinking [level]         Show or set thinking: inherit|off|minimal|low|medium|high|xhigh|max.
-  config list              List omp settings.
-  config get <key>         Read one omp setting.
-  config set <key> <value> Persist one omp setting through \`omp config set\`.
-  config reset <key>       Remove one persisted omp setting.`;
+  model [spec]             Show or set the execpolicy judge model. Does not change /switch.
+  config list              List omp-execpolicy plugin settings.
+  config get <key>         Read one omp-execpolicy setting.
+  config set <key> <value> Persist one omp-execpolicy setting.
+  config reset <key>       Delete one persisted setting so its default applies.`;
 
 function renderEvaluation(state: EngineState, command: string): Evaluation {
 	return state.policy.check(command, heuristicsFor(state.settings));
@@ -53,7 +48,11 @@ function formatStatus(state: EngineState): string {
 		`rules loaded: ${loaded.policy.ruleCount}`,
 		`prompt policy: ${settings.ask === "never" ? "never prompt (prompt verdicts become blocks)" : "ask the user"}`,
 		`unmatched commands: ${settings.unmatched ?? "no opinion (allowed)"}`,
-		`judge: ${settings.judge ? `${settings.judgeModel} (timeout ${settings.judgeTimeoutMs}ms, retries ${settings.judgeRetries}, on error: ${settings.judgeOnError})` : "off"}`,
+		`judge: ${settings.judge ? "on" : "off"}`,
+		`judge model setting: ${settings.judgeModel}`,
+		`judge timeout: ${settings.judgeTimeoutMs}ms`,
+		`judge retries: ${settings.judgeRetries}`,
+		`judge on error: ${settings.judgeOnError}`,
 		`rule amendment: ${settings.amendRules ? settings.amendFile : "off"}`,
 		"",
 		"## Rule files (low → high precedence)",
@@ -150,80 +149,111 @@ function splitHead(input: string): [string, string] {
 	return [match?.[1] ?? "", match?.[2]?.trim() ?? ""];
 }
 
-async function handleModel(pi: ExtensionAPI, ctx: ExtensionCommandContext, spec: string): Promise<string> {
-	if (spec.length === 0) {
-		const current = ctx.model;
-		return current === undefined ? "model: (none)" : `model: ${current.provider}/${current.id}`;
-	}
-	const model = ctx.models.resolve(spec);
-	if (model === undefined) return `model not found: ${spec}`;
-	const setModel = (pi as unknown as RuntimeControls).setModel;
-	if (typeof setModel !== "function") return "model switching is not supported by this omp runtime";
-	const ok = await setModel(model);
-	return ok ? `model: ${model.provider}/${model.id}` : `model unavailable (no credential): ${model.provider}/${model.id}`;
+function formatResolvedJudgeModel(ctx: ExtensionCommandContext, selector: string): string {
+	const model = ctx.models.resolve(selector);
+	return model === undefined ? "(unresolved)" : `${model.provider}/${model.id}`;
 }
 
-function handleThinking(pi: ExtensionAPI, level: string): string {
+async function runPluginConfig(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	args: string[],
+): Promise<{ ok: true; output: string } | { ok: false; output: string }> {
 	const runtime = pi as unknown as RuntimeControls;
-	if (level.length === 0) {
-		return typeof runtime.getThinkingLevel === "function"
-			? `thinking: ${runtime.getThinkingLevel() ?? "(unset)"}`
-			: "thinking controls are not supported by this omp runtime";
+	if (typeof runtime.exec !== "function") {
+		return { ok: false, output: "omp plugin config is not supported by this omp runtime" };
 	}
-	const normalized = level.toLowerCase();
-	if (!THINKING_LEVELS.has(normalized)) {
-		return `invalid thinking level: ${level}\nvalid: ${[...THINKING_LEVELS].join(", ")}`;
+	const result = await runtime.exec("omp", ["plugin", "config", ...args], { cwd: ctx.cwd, timeout: 30_000 });
+	const stdout = result.stdout.trim();
+	const stderr = result.stderr.trim();
+	if (result.code !== 0) {
+		return {
+			ok: false,
+			output: [`omp plugin config failed (exit ${result.code})`, stderr || stdout || "(no output)"].join("\n"),
+		};
 	}
-	if (typeof runtime.setThinkingLevel !== "function") return "thinking controls are not supported by this omp runtime";
-	runtime.setThinkingLevel(normalized);
-	return `thinking: ${normalized}`;
+	return { ok: true, output: stdout || stderr || "ok" };
+}
+
+async function handleJudgeModel(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	loadState: LoadState,
+	spec: string,
+): Promise<string> {
+	if (spec.length === 0) {
+		const state = await loadState(ctx.cwd);
+		return [
+			"# Execpolicy judge model",
+			`setting: ${state.settings.judgeModel}`,
+			`resolved: ${formatResolvedJudgeModel(ctx, state.settings.judgeModel)}`,
+			"OMP /switch does not change this setting.",
+		].join("\n");
+	}
+
+	const requested = ctx.models.resolve(spec);
+	if (requested === undefined) {
+		return `judge model not found: ${spec}\nNo execpolicy setting was changed.`;
+	}
+
+	const saved = await runPluginConfig(pi, ctx, ["set", PLUGIN_NAME, "judgeModel", spec]);
+	if (!saved.ok) return saved.output;
+
+	const state = await loadState(ctx.cwd);
+	const effective = state.settings.judgeModel;
+	const lines = [
+		"# Execpolicy judge model updated",
+		`setting: ${effective}`,
+		`resolved: ${formatResolvedJudgeModel(ctx, effective)}`,
+		"OMP /switch does not change this setting.",
+	];
+	if (effective !== spec) {
+		lines.push(`saved value: ${spec}`, "A higher-precedence override is controlling the effective judge model.");
+	}
+	return lines.join("\n");
 }
 
 async function handleConfig(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<string> {
 	const [action, rest] = splitHead(args);
-	const runtime = pi as unknown as RuntimeControls;
-	if (typeof runtime.exec !== "function") return "omp config control is not supported by this omp runtime";
 	let commandArgs: string[];
 
 	switch (action) {
 		case "list":
 			if (rest.length > 0 && rest !== "--json") return "Usage: /execpolicy config list [--json]";
-			commandArgs = ["config", "list", ...(rest === "--json" ? ["--json"] : [])];
+			commandArgs = ["list", PLUGIN_NAME, ...(rest === "--json" ? ["--json"] : [])];
 			break;
 		case "get": {
 			const [key, extra] = splitHead(rest);
-			if (key.length === 0 || (extra.length > 0 && extra !== "--json")) return "Usage: /execpolicy config get <key> [--json]";
-			commandArgs = ["config", "get", key, ...(extra === "--json" ? ["--json"] : [])];
+			if (key.length === 0 || (extra.length > 0 && extra !== "--json")) {
+				return "Usage: /execpolicy config get <key> [--json]";
+			}
+			commandArgs = ["get", PLUGIN_NAME, key, ...(extra === "--json" ? ["--json"] : [])];
 			break;
 		}
 		case "set": {
 			const [key, value] = splitHead(rest);
 			if (key.length === 0 || value.length === 0) return "Usage: /execpolicy config set <key> <value>";
-			commandArgs = ["config", "set", key, value];
+			commandArgs = ["set", PLUGIN_NAME, key, value];
 			break;
 		}
-		case "reset": {
+		case "reset":
+		case "delete": {
 			const [key, extra] = splitHead(rest);
 			if (key.length === 0 || extra.length > 0) return "Usage: /execpolicy config reset <key>";
-			commandArgs = ["config", "reset", key];
+			commandArgs = ["delete", PLUGIN_NAME, key];
 			break;
 		}
 		default:
 			return "Usage: /execpolicy config [list|get <key>|set <key> <value>|reset <key>]";
 	}
 
-	const result = await runtime.exec("omp", commandArgs, { cwd: ctx.cwd, timeout: 30_000 });
-	const stdout = result.stdout.trim();
-	const stderr = result.stderr.trim();
-	if (result.code !== 0) {
-		return [`omp config failed (exit ${result.code})`, stderr || stdout || "(no output)"].join("\n");
-	}
-	return stdout || stderr || "ok";
+	const result = await runPluginConfig(pi, ctx, commandArgs);
+	return result.output;
 }
 
 export function registerExecpolicyCommand(pi: ExtensionAPI, loadState: LoadState): void {
 	pi.registerCommand("execpolicy", {
-		description: "Inspect shell execution policy and control the current omp session",
+		description: "Inspect and configure shell execution policy",
 		handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
 			const trimmed = args.trim();
 			const [subcommandRaw, rest] = splitHead(trimmed);
@@ -232,10 +262,8 @@ export function registerExecpolicyCommand(pi: ExtensionAPI, loadState: LoadState
 
 			switch (subcommand) {
 				case "model":
-					output = await handleModel(pi, ctx, rest);
-					break;
-				case "thinking":
-					output = handleThinking(pi, rest);
+				case "judge-model":
+					output = await handleJudgeModel(pi, ctx, loadState, rest);
 					break;
 				case "config":
 					output = await handleConfig(pi, ctx, rest);
