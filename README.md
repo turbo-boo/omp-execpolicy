@@ -330,16 +330,10 @@ bash command the reviewer allowed.
 
 ```console
 $ /execpolicy model
-# Execpolicy judge model
-setting: @smol
-resolved: opencode-go/mimo-v2.6-flash
-OMP /switch does not change this setting.
+judge: @smol → opencode-go/mimo-v2.6-flash
 
 $ /execpolicy model @slow
-# Execpolicy judge model updated
-setting: @slow
-resolved: anthropic/claude-sonnet-5
-OMP /switch does not change this setting.
+judge: @slow → anthropic/claude-sonnet-5
 
 $ /execpolicy config set judgeRetries 2
 ✓ Set judgeRetries

@@ -183,34 +183,21 @@ async function handleJudgeModel(
 ): Promise<string> {
 	if (spec.length === 0) {
 		const state = await loadState(ctx.cwd);
-		return [
-			"# Execpolicy judge model",
-			`setting: ${state.settings.judgeModel}`,
-			`resolved: ${formatResolvedJudgeModel(ctx, state.settings.judgeModel)}`,
-			"OMP /switch does not change this setting.",
-		].join("\n");
+		return `judge: ${state.settings.judgeModel} → ${formatResolvedJudgeModel(ctx, state.settings.judgeModel)}`;
 	}
 
 	const requested = ctx.models.resolve(spec);
-	if (requested === undefined) {
-		return `judge model not found: ${spec}\nNo execpolicy setting was changed.`;
-	}
+	if (requested === undefined) return `judge model not found: ${spec}`;
 
 	const saved = await runPluginConfig(pi, ctx, ["set", PLUGIN_NAME, "judgeModel", spec]);
 	if (!saved.ok) return saved.output;
 
 	const state = await loadState(ctx.cwd);
 	const effective = state.settings.judgeModel;
-	const lines = [
-		"# Execpolicy judge model updated",
-		`setting: ${effective}`,
-		`resolved: ${formatResolvedJudgeModel(ctx, effective)}`,
-		"OMP /switch does not change this setting.",
-	];
-	if (effective !== spec) {
-		lines.push(`saved value: ${spec}`, "A higher-precedence override is controlling the effective judge model.");
-	}
-	return lines.join("\n");
+	const resolved = formatResolvedJudgeModel(ctx, effective);
+	return effective === spec
+		? `judge: ${effective} → ${resolved}`
+		: `judge: ${effective} → ${resolved} (saved: ${spec}, overridden)`;
 }
 
 async function handleConfig(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<string> {
