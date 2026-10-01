@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { registerExecpolicyCommand } from "../src/slash-command.ts";
 import { buildPolicy, type Policy } from "../src/policy.ts";
 import { loadRuleFiles, resolveRuleDirs } from "../src/rule-files.ts";
@@ -36,13 +36,14 @@ interface Harness {
 function harness(state: EngineState | (() => EngineState)): Harness {
 	const commands: string[] = [];
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+	const eventHandlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const pi = {
+		on(event: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) {
+			eventHandlers.set(event, callback);
+		},
 		registerCommand(name: string, options: { handler: typeof handler }) {
 			commands.push(name);
 			handler = options.handler;
-		},
-		sendMessage(message: { content: unknown }) {
-			lastOutput = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
 		},
 	} as unknown as ExtensionAPI;
 	let lastOutput = "";
@@ -51,7 +52,14 @@ function harness(state: EngineState | (() => EngineState)): Harness {
 		commands,
 		async run(args: string) {
 			if (handler === undefined) throw new Error("/execpolicy was never registered");
-			const ctx = { cwd: "/repo" } as unknown as ExtensionCommandContext;
+			const ctx = {
+				cwd: "/repo",
+				ui: {
+					setWidget(_key: string, widget: string[] | undefined) {
+						lastOutput = widget === undefined ? "" : widget.join("\n");
+					},
+				},
+			} as unknown as ExtensionCommandContext;
 			await handler(args, ctx);
 			return lastOutput;
 		},
