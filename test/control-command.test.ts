@@ -83,9 +83,7 @@ describe("/execpolicy model", () => {
 			resolvedModels: { "@smol": { provider: "opencode-go", id: "mimo-judge" } },
 		});
 		const before = await h.run("model");
-		assert.match(before, /# Execpolicy judge model/);
-		assert.match(before, /setting: @smol/);
-		assert.match(before, /resolved: opencode-go\/mimo-judge/);
+		assert.equal(before, "judge: @smol → opencode-go/mimo-judge");
 		assert.doesNotMatch(before, /claude-opus-session/);
 
 		h.setSessionModel({ provider: "openai", id: "gpt-session" });
@@ -98,9 +96,7 @@ describe("/execpolicy model", () => {
 			resolvedModels: { "@slow": { provider: "anthropic", id: "claude-judge" } },
 		});
 		const output = await h.run("model @slow");
-		assert.match(output, /# Execpolicy judge model updated/);
-		assert.match(output, /setting: @slow/);
-		assert.match(output, /resolved: anthropic\/claude-judge/);
+		assert.equal(output, "judge: @slow → anthropic/claude-judge");
 		assert.deepEqual(h.execCall, {
 			command: "omp",
 			args: ["plugin", "config", "set", "omp-execpolicy", "judgeModel", "@slow"],
@@ -110,7 +106,7 @@ describe("/execpolicy model", () => {
 
 	it("rejects an unknown judge model without changing plugin config", async () => {
 		const h = controlHarness();
-		assert.equal(await h.run("model missing/model"), "judge model not found: missing/model\nNo execpolicy setting was changed.");
+		assert.equal(await h.run("model missing/model"), "judge model not found: missing/model");
 		assert.equal(h.execCall, undefined);
 	});
 });
