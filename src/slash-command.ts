@@ -24,7 +24,7 @@ type RuntimeControls = {
 		command: string,
 		args: string[],
 		options?: { cwd?: string; timeout?: number },
-	): Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
+	) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
 };
 
 const HELP = `Usage: /execpolicy [status|rules|files|check <command>|explain <command>|model [spec]|thinking [level]|config <action> ...]
