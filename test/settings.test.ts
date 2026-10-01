@@ -10,6 +10,7 @@ describe("judge retry settings", () => {
 	it("accepts zero and floors positive numeric values", () => {
 		assert.equal(resolveSettings({ judgeRetries: 0 }).judgeRetries, 0);
 		assert.equal(resolveSettings({ judgeRetries: 2.9 }).judgeRetries, 2);
+		assert.equal(resolveSettings({ judgeRetries: 99 }).judgeRetries, 3);
 	});
 
 	it("lets the environment override the persisted value", () => {
