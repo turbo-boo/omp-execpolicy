@@ -6,14 +6,49 @@
  * `/switch`.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { evaluationToJson, type Evaluation } from "./policy.ts";
 import { describeRuleReason, evaluateDeterministic, heuristicsFor } from "./gate.ts";
 import { renderPattern } from "./rules.ts";
 import type { EngineState, LoadState } from "./state.ts";
 
-const OUTPUT_TYPE = "execpolicy";
+const OUTPUT_WIDGET = "execpolicy-output";
 const PLUGIN_NAME = "omp-execpolicy";
+
+type CompletionItem = { value: string; label: string; description?: string };
+
+const SUBCOMMAND_COMPLETIONS: CompletionItem[] = [
+	{ value: "status", label: "status", description: "Show execpolicy status" },
+	{ value: "model", label: "model", description: "Show or set judge model" },
+	{ value: "config", label: "config", description: "Read or write plugin settings" },
+	{ value: "rules", label: "rules", description: "List compiled rules" },
+	{ value: "files", label: "files", description: "List rule files and diagnostics" },
+	{ value: "check", label: "check", description: "Evaluate a command" },
+	{ value: "explain", label: "explain", description: "Explain a command verdict" },
+	{ value: "help", label: "help", description: "Show command help" },
+];
+
+const CONFIG_ACTION_COMPLETIONS: CompletionItem[] = [
+	{ value: "list", label: "list", description: "List plugin settings" },
+	{ value: "get", label: "get", description: "Read a setting" },
+	{ value: "set", label: "set", description: "Persist a setting" },
+	{ value: "reset", label: "reset", description: "Restore a setting default" },
+];
+
+const CONFIG_KEYS = [
+	"enabled",
+	"ask",
+	"unmatched",
+	"judge",
+	"judgeModel",
+	"judgeTimeoutMs",
+	"judgeRetries",
+	"judgeOnError",
+	"judgePolicy",
+	"extraRuleFiles",
+	"amendRules",
+	"amendFile",
+] as const;
 
 type RuntimeControls = {
 	exec?: (
@@ -238,9 +273,80 @@ async function handleConfig(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
 	return result.output;
 }
 
+function filterCompletions(items: CompletionItem[], prefix: string): CompletionItem[] | null {
+	const needle = prefix.trim().toLowerCase();
+	const filtered = needle.length === 0 ? items : items.filter(item => item.value.toLowerCase().startsWith(needle));
+	return filtered.length > 0 ? filtered : null;
+}
+
+function modelCompletions(ctx: ExtensionContext): CompletionItem[] {
+	const out: CompletionItem[] = [];
+	const seen = new Set<string>();
+	for (const role of ["@smol", "@slow", "@plan", "@judge", "@default"]) {
+		if (ctx.models.resolve(role) === undefined) continue;
+		seen.add(role);
+		out.push({ value: role, label: role, description: "model role" });
+	}
+	for (const model of ctx.models.list()) {
+		const value = `${model.provider}/${model.id}`;
+		if (seen.has(value)) continue;
+		seen.add(value);
+		out.push({ value, label: value });
+	}
+	return out;
+}
+
+function configKeyCompletions(prefix: string): CompletionItem[] | null {
+	return filterCompletions(
+		CONFIG_KEYS.map(key => ({ value: key, label: key })),
+		prefix,
+	);
+}
+
+function argumentCompletions(argumentPrefix: string, models: CompletionItem[]): CompletionItem[] | null {
+	const firstSpace = argumentPrefix.indexOf(" ");
+	if (firstSpace === -1) return filterCompletions(SUBCOMMAND_COMPLETIONS, argumentPrefix);
+
+	const subcommand = argumentPrefix.slice(0, firstSpace).trim().toLowerCase();
+	const rest = argumentPrefix.slice(firstSpace + 1);
+
+	if (subcommand === "model" || subcommand === "judge-model") {
+		if (rest.includes(" ")) return null;
+		return filterCompletions(models, rest);
+	}
+
+	if (subcommand !== "config") return null;
+
+	const secondSpace = rest.indexOf(" ");
+	if (secondSpace === -1) return filterCompletions(CONFIG_ACTION_COMPLETIONS, rest);
+
+	const action = rest.slice(0, secondSpace).trim().toLowerCase();
+	const valuePrefix = rest.slice(secondSpace + 1);
+	if (action === "get" || action === "set" || action === "reset" || action === "delete") {
+		if (valuePrefix.includes(" ")) return null;
+		return configKeyCompletions(valuePrefix);
+	}
+	return null;
+}
+
+function showLocalOutput(ctx: ExtensionCommandContext, output: string): void {
+	ctx.ui.setWidget(OUTPUT_WIDGET, output.split("\n"), { placement: "aboveEditor" });
+}
+
 export function registerExecpolicyCommand(pi: ExtensionAPI, loadState: LoadState): void {
+	let models: CompletionItem[] = [];
+	const refreshModels = (ctx: ExtensionContext): void => {
+		models = modelCompletions(ctx);
+	};
+	pi.on("session_start", (_event, ctx) => refreshModels(ctx));
+	pi.on("session_switch", (_event, ctx) => refreshModels(ctx));
+	pi.on("input", (_event, ctx) => {
+		ctx.ui.setWidget(OUTPUT_WIDGET, undefined);
+	});
+
 	pi.registerCommand("execpolicy", {
 		description: "Inspect and configure shell execution policy",
+		getArgumentCompletions: argumentPrefix => argumentCompletions(argumentPrefix, models),
 		handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
 			const trimmed = args.trim();
 			const [subcommandRaw, rest] = splitHead(trimmed);
@@ -292,7 +398,7 @@ export function registerExecpolicyCommand(pi: ExtensionAPI, loadState: LoadState
 					output = `Unknown subcommand ${JSON.stringify(subcommand)}.\n\n${HELP}`;
 			}
 
-			pi.sendMessage({ customType: OUTPUT_TYPE, content: output, display: true });
+			showLocalOutput(ctx, output);
 		},
 	});
 }
