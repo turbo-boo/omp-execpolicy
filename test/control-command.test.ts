@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { registerExecpolicyCommand } from "../src/slash-command.ts";
 import { resolveSettings } from "../src/settings.ts";
 import type { EngineState } from "../src/state.ts";
@@ -14,16 +14,29 @@ interface HarnessOptions {
 
 function controlHarness(options: HarnessOptions = {}) {
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+	let getArgumentCompletions: ((prefix: string) => Array<{ value: string; label: string }> | null) | undefined;
+	const eventHandlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	let output = "";
+	let sendMessageCalls = 0;
 	let execCall: { command: string; args: string[]; cwd?: string } | undefined;
 	let judgeModel = options.judgeModel ?? "@smol";
 
 	const pi = {
-		registerCommand(_name: string, command: { handler: typeof handler }) {
-			handler = command.handler;
+		on(event: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) {
+			eventHandlers.set(event, callback);
 		},
-		sendMessage(message: { content: unknown }) {
-			output = String(message.content);
+		registerCommand(
+			_name: string,
+			command: {
+				handler: typeof handler;
+				getArgumentCompletions?: typeof getArgumentCompletions;
+			},
+		) {
+			handler = command.handler;
+			getArgumentCompletions = command.getArgumentCompletions;
+		},
+		sendMessage() {
+			sendMessageCalls++;
 		},
 		async exec(command: string, args: string[], execOptions?: { cwd?: string }) {
 			execCall = { command, args, cwd: execOptions?.cwd };
@@ -41,11 +54,18 @@ function controlHarness(options: HarnessOptions = {}) {
 		},
 	} as unknown as ExtensionAPI;
 
+	const available = [...new Map(Object.values(options.resolvedModels ?? {}).map(model => [`${model.provider}/${model.id}`, model])).values()];
 	const ctx = {
 		cwd: "/repo",
 		model: options.sessionModel as any,
 		models: {
+			list: () => available as any[],
 			resolve: (spec: string) => options.resolvedModels?.[spec] as any,
+		},
+		ui: {
+			setWidget(_key: string, widget: string[] | undefined) {
+				output = widget === undefined ? "" : widget.join("\n");
+			},
 		},
 	} as unknown as ExtensionCommandContext;
 
@@ -59,6 +79,7 @@ function controlHarness(options: HarnessOptions = {}) {
 		}) as unknown as EngineState;
 
 	registerExecpolicyCommand(pi, loadState);
+	eventHandlers.get("session_start")?.({}, ctx as unknown as ExtensionContext);
 
 	return {
 		async run(args: string) {
@@ -66,11 +87,17 @@ function controlHarness(options: HarnessOptions = {}) {
 			await handler(args, ctx);
 			return output;
 		},
+		complete(prefix: string) {
+			return getArgumentCompletions?.(prefix) ?? null;
+		},
 		setSessionModel(model: { provider: string; id: string }) {
 			(ctx as any).model = model;
 		},
 		get execCall() {
 			return execCall;
+		},
+		get sendMessageCalls() {
+			return sendMessageCalls;
 		},
 	};
 }
@@ -108,6 +135,50 @@ describe("/execpolicy model", () => {
 		const h = controlHarness();
 		assert.equal(await h.run("model missing/model"), "judge model not found: missing/model");
 		assert.equal(h.execCall, undefined);
+	});
+});
+
+describe("/execpolicy local UI", () => {
+	it("renders command output without injecting a message into model context", async () => {
+		const h = controlHarness({
+			resolvedModels: { "@smol": { provider: "opencode-go", id: "mimo-judge" } },
+		});
+		assert.equal(await h.run("model"), "judge: @smol → opencode-go/mimo-judge");
+		assert.equal(h.sendMessageCalls, 0);
+	});
+});
+
+describe("/execpolicy autocomplete", () => {
+	it("offers subcommands", () => {
+		const h = controlHarness();
+		assert.deepEqual(
+			h.complete("mo")?.map(item => item.value),
+			["model"],
+		);
+		assert.ok(h.complete("")?.some(item => item.value === "config"));
+	});
+
+	it("offers judge model roles and resolved models", () => {
+		const h = controlHarness({
+			resolvedModels: {
+				"@smol": { provider: "opencode-go", id: "mimo-judge" },
+				"@slow": { provider: "anthropic", id: "claude-judge" },
+			},
+		});
+		const values = h.complete("model ")?.map(item => item.value) ?? [];
+		assert.ok(values.includes("@smol"));
+		assert.ok(values.includes("@slow"));
+		assert.ok(values.includes("opencode-go/mimo-judge"));
+		assert.ok(values.includes("anthropic/claude-judge"));
+	});
+
+	it("offers config actions and keys", () => {
+		const h = controlHarness();
+		assert.ok(h.complete("config ")?.some(item => item.value === "set"));
+		const keys = h.complete("config set judge")?.map(item => item.value) ?? [];
+		assert.ok(keys.includes("judgeModel"));
+		assert.ok(keys.includes("judgeRetries"));
+		assert.ok(keys.includes("judgeOnError"));
 	});
 });
 
