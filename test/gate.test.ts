@@ -271,7 +271,11 @@ describe("parseVerdict", () => {
 	});
 
 	it("rejects a response with no verdict", () => {
-		assert.deepEqual(parseVerdict("I cannot help with that."), { ok: false, error: "judge returned no JSON object" });
+		assert.deepEqual(parseVerdict("I cannot help with that."), {
+			ok: false,
+			kind: "structure",
+			error: "judge returned no complete JSON object",
+		});
 	});
 
 	it("rejects an unrecognized outcome", () => {
