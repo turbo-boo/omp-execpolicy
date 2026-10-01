@@ -111,9 +111,9 @@ function asNumber(value: unknown, fallback: number): number {
 	return fallback;
 }
 
-function asNonNegativeInteger(value: unknown, fallback: number): number {
+function asNonNegativeInteger(value: unknown, fallback: number, max = Number.POSITIVE_INFINITY): number {
 	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.min(max, Math.floor(parsed)) : fallback;
 }
 
 function expandHome(target: string): string {
@@ -149,7 +149,11 @@ export function resolveSettings(persisted: Record<string, unknown> | undefined):
 			(typeof stored.judgeModel === "string" && stored.judgeModel.length > 0 ? stored.judgeModel : undefined) ??
 			DEFAULTS.judgeModel,
 		judgeTimeoutMs: asNumber(env.OMP_EXECPOLICY_JUDGE_TIMEOUT_MS ?? stored.judgeTimeoutMs, DEFAULTS.judgeTimeoutMs),
-		judgeRetries: asNonNegativeInteger(env.OMP_EXECPOLICY_JUDGE_RETRIES ?? stored.judgeRetries, DEFAULTS.judgeRetries),
+		judgeRetries: asNonNegativeInteger(
+			env.OMP_EXECPOLICY_JUDGE_RETRIES ?? stored.judgeRetries,
+			DEFAULTS.judgeRetries,
+			3,
+		),
 		judgeOnError:
 			asEnum(env.OMP_EXECPOLICY_JUDGE_ON_ERROR, ["ask", "allow"] as const) ??
 			asEnum(stored.judgeOnError, ["ask", "allow"] as const) ??
