@@ -11,7 +11,7 @@
  * (by default, ask the user). Nothing here blocks a tool call by itself.
  */
 
-import { completeSimple, type Api, type ApiKey, type AssistantMessage, type Model } from "@oh-my-pi/pi-ai";
+import type { Api, ApiKey, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { JUDGE_SYSTEM_PROMPT, buildJudgePrompt } from "./prompt.ts";
 import { parseVerdict, type JudgeErrorKind, type JudgeResult } from "./verdict.ts";
 
@@ -42,8 +42,8 @@ export interface JudgeDeps {
 	maxTokens?: number;
 	/** Number of extra attempts after a malformed/empty verdict. */
 	retries?: number;
-	/** Test seam; production uses `completeSimple`. */
-	complete?: typeof completeSimple;
+	/** Test seam; production lazily loads `completeSimple`. */
+	complete?: typeof import("@oh-my-pi/pi-ai").completeSimple;
 }
 
 const DEFAULT_MAX_TOKENS = 4096;
@@ -88,7 +88,7 @@ export async function judgeCommand(request: JudgeRequest, deps: JudgeDeps): Prom
 		transcript: request.transcript,
 		...(request.policy === undefined ? {} : { policy: request.policy }),
 	});
-	const complete = deps.complete ?? completeSimple;
+	const complete = deps.complete ?? (await import("@oh-my-pi/pi-ai")).completeSimple;
 	const requestedRetries = deps.retries ?? 0;
 	const retries = Number.isFinite(requestedRetries) ? Math.max(0, Math.floor(requestedRetries)) : 0;
 	let previous: JudgeResult | undefined;
